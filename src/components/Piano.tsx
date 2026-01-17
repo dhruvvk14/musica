@@ -14,6 +14,7 @@ interface NoteEvent {
   duration: number;
 }
 
+// C4 to B5 (14 white keys)
 const firstNote = MidiNumbers.fromNote("c4");
 const lastNote = MidiNumbers.fromNote("b5");
 
@@ -30,7 +31,6 @@ const PianoComponent: React.FC<PianoProps> = ({ maxWidth, goBack }) => {
   const [isLoaded, setIsLoaded] = useState(false);
   const [activeNotes, setActiveNotes] = useState<number[]>([]);
 
-  // 1. Acoustic Grand Piano Sampler
   const [sampler] = useState(() => {
     return new Tone.Sampler({
       urls: {
@@ -41,24 +41,18 @@ const PianoComponent: React.FC<PianoProps> = ({ maxWidth, goBack }) => {
         A4: "A4.mp3", C5: "C5.mp3", "D#5": "Ds5.mp3", "F#5": "Fs5.mp3",
         A5: "A5.mp3", C6: "C6.mp3",
       },
-      release: 1,
       baseUrl: "https://tonejs.github.io/audio/salamander/",
       onload: () => setIsLoaded(true),
     }).toDestination();
   });
 
-  // 2. MusicXML Parser & Visual Scheduler
   const handleFileLoad = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     const text = await file.text();
     const parser = new DOMParser();
     const xmlDoc = parser.parseFromString(text, "text/xml");
-    
-    const divisionsElem = xmlDoc.getElementsByTagName("divisions")[0];
-    const divisions = divisionsElem ? parseInt(divisionsElem.textContent || "1") : 1;
-    
+    const divisions = parseInt(xmlDoc.getElementsByTagName("divisions")[0]?.textContent || "1");
     const notesArray: NoteEvent[] = [];
     let currentTime = 0;
     const measures = xmlDoc.getElementsByTagName("measure");
@@ -70,170 +64,191 @@ const PianoComponent: React.FC<PianoProps> = ({ maxWidth, goBack }) => {
         const isChord = note.getElementsByTagName("chord").length > 0;
         const durValue = parseInt(note.getElementsByTagName("duration")[0]?.textContent || "0");
         const durationInSeconds = (durValue / divisions) * 0.5;
-
         if (!isRest) {
           const step = note.getElementsByTagName("step")[0]?.textContent;
           const octave = note.getElementsByTagName("octave")[0]?.textContent;
           const alter = note.getElementsByTagName("alter")[0]?.textContent;
-
           if (step && octave) {
             let noteName = `${step}${octave}`;
             if (alter === "1") noteName = `${step}#${octave}`;
             if (alter === "-1") noteName = `${step}b${octave}`;
-
-            notesArray.push({
-              time: currentTime,
-              note: noteName,
-              duration: durationInSeconds,
-            });
+            notesArray.push({ time: currentTime, note: noteName, duration: durationInSeconds });
           }
         }
         if (!isChord) currentTime += durationInSeconds;
       });
     }
-
     setDuration(currentTime);
     Tone.Transport.cancel();
-
     new Tone.Part<NoteEvent>((time, event) => {
       const midiValue = Tone.Frequency(event.note).toMidi();
-
-      // Audio
       sampler.triggerAttackRelease(event.note, event.duration, time);
-
-      // Visual Highlight
-      Tone.Draw.schedule(() => {
-        setActiveNotes((prev) => [...new Set([...prev, midiValue])]);
-      }, time);
-
-      // Visual Release
-      Tone.Draw.schedule(() => {
-        setActiveNotes((prev) => prev.filter((n) => n !== midiValue));
-      }, time + event.duration);
-
+      Tone.Draw.schedule(() => setActiveNotes((prev) => [...new Set([...prev, midiValue])]), time);
+      Tone.Draw.schedule(() => setActiveNotes((prev) => prev.filter((n) => n !== midiValue)), time + event.duration);
     }, notesArray).start(0);
   };
 
-  const togglePlay = async () => {
-    await Tone.start();
-    if (isPlaying) {
-      Tone.Transport.pause();
-    } else {
-      Tone.Transport.start();
-    }
+  const togglePlay = () => {
+    Tone.start();
+    isPlaying ? Tone.Transport.pause() : Tone.Transport.start();
     setIsPlaying(!isPlaying);
   };
 
   useEffect(() => {
     const interval = setInterval(() => {
-      if (Tone.Transport.state === "started") {
-        setPlaybackTime(Tone.Transport.seconds);
-      }
+      if (Tone.Transport.state === "started") setPlaybackTime(Tone.Transport.seconds);
     }, 100);
     return () => clearInterval(interval);
   }, []);
 
-  // Cast Piano to any to allow activeNotes prop without TS errors
   const PianoComponentRaw = Piano as any;
+  const pianoDisplayWidth = maxWidth * 0.9; 
 
   return (
     <div style={containerStyle}>
-      <style>{customPianoStyles}</style>
+      <style>{`
+        .ReactPiano__Keyboard {
+          display: flex !important;
+          flex-direction: row !important;
+          background: #000;
+          padding: 0 !important;
+          border-top: 15px solid #1a1a1a;
+          margin: 0 auto;
+          overflow: visible !important;
+        }
+
+        .ReactPiano__Key {
+          margin: 0 !important;
+          padding: 0 !important;
+          position: relative !important;
+          left: auto !important; 
+        }
+
+        .ReactPiano__Key--natural {
+          height: 350px !important;
+          background: #ffffff !important;
+          border: 1px solid #bbb !important;
+          z-index: 1;
+          width: ${pianoDisplayWidth / 14}px !important; 
+        }
+
+        .ReactPiano__Key--accidental {
+          height: 220px !important;
+          background: #111 !important;
+          border: 1px solid #000 !important;
+          z-index: 10 !important;
+          width: ${pianoDisplayWidth / 22}px !important;
+          margin-left: -${pianoDisplayWidth / 44}px !important;
+          margin-right: -${pianoDisplayWidth / 44}px !important;
+          box-shadow: 2px 5px 10px rgba(0,0,0,0.5);
+        }
+
+        .piano-label-large {
+          position: absolute;
+          bottom: 25px;
+          left: 0;
+          right: 0;
+          text-align: center;
+          font-family: 'Arial Black', sans-serif;
+          font-weight: 900;
+          font-size: 18px;
+          pointer-events: none;
+          z-index: 999 !important;
+        }
+
+        .color-black { color: #000000 !important; }
+        .color-white { color: #ffffff !important; bottom: 20px; font-size: 14px; }
+
+        .ReactPiano__Key--active.ReactPiano__Key--natural { 
+            background: #facc15 !important; 
+            box-shadow: inset 0 -10px 20px rgba(0,0,0,0.1);
+        }
+        .ReactPiano__Key--active.ReactPiano__Key--accidental { 
+            background: #eab308 !important; 
+        }
+      `}</style>
 
       <div style={pianoChassisStyle}>
         <div style={toolbarStyle}>
-          <div style={fileUploadWrapper}>
-            <label style={labelStyle}>IMPORT MUSICXML</label>
-            <input type="file" accept=".musicxml,.xml" onChange={handleFileLoad} style={fileInputStyle} disabled={!isLoaded} />
+          <div style={{display: 'flex', flexDirection: 'column', gap: '8px'}}>
+            <label style={{color: '#888', fontSize: '12px', fontWeight: '900', letterSpacing: '1px'}}>IMPORT MUSICXML</label>
+            <input type="file" accept=".musicxml,.xml" onChange={handleFileLoad} style={{fontSize: '14px', color: '#ccc'}} />
           </div>
-
-          <button onClick={togglePlay} style={playButtonStyle} disabled={!isLoaded}>
-            {isPlaying ? "⏸ PAUSE" : "▶ PLAY COMPOSITION"}
-          </button>
           
-          <div style={scrubberContainer}>
-             <input 
-                type="range" min="0" max={duration || 1} step="0.1"
-                value={playbackTime} 
-                onChange={(e) => {
-                  const val = parseFloat(e.target.value);
-                  setPlaybackTime(val);
-                  Tone.Transport.seconds = val;
-                  setActiveNotes([]); 
-                }}
-                style={sliderStyle}
-              />
-              <span style={timeStyle}>{playbackTime.toFixed(1)}s</span>
+          <button onClick={togglePlay} style={playButtonStyle} disabled={!isLoaded}>
+            {isPlaying ? "⏸ PAUSE SESSION" : "▶ START PLAYBACK"}
+          </button>
+
+          <div style={{flexGrow: 1, display: 'flex', alignItems: 'center', gap: '20px'}}>
+            <input type="range" min="0" max={duration || 1} step="0.1" value={playbackTime} 
+              onChange={(e) => {
+                const val = parseFloat(e.target.value);
+                setPlaybackTime(val);
+                Tone.Transport.seconds = val;
+                setActiveNotes([]);
+              }} 
+              style={{flexGrow: 1, accentColor: '#facc15', height: '10px'}} 
+            />
+            <span style={{color: '#facc15', fontSize: '18px', minWidth: '60px', fontWeight: 'bold', fontFamily: 'monospace'}}>
+              {playbackTime.toFixed(1)}s
+            </span>
           </div>
         </div>
 
-        <div style={{ padding: "40px 60px", background: '#1e1e1e' }}>
-            {!isLoaded ? (
-              <div style={{color: '#facc15', textAlign: 'center'}}>Preparing Soundboard...</div>
-            ) : (
+        <div style={pianoWrapperStyle}>
+          {!isLoaded ? (
+            <div style={{color: '#facc15', fontSize: '24px', fontWeight: 'bold'}}>LOADING HIGH-FIDELITY AUDIO...</div>
+          ) : (
+            <div style={{ width: pianoDisplayWidth }}>
               <PianoComponentRaw
                 activeNotes={activeNotes}
                 noteRange={{ first: firstNote, last: lastNote }}
-                playNote={(midi: number) => {
-                  sampler.triggerAttack(Tone.Frequency(midi, "midi").toNote());
-                }}
-                stopNote={(midi: number) => {
-                  sampler.triggerRelease(Tone.Frequency(midi, "midi").toNote());
-                }}
-                onPlayNoteInput={(midi: number) => {
-                  setActiveNotes((prev) => [...new Set([...prev, midi])]);
-                }}
-                onStopNoteInput={(midi: number) => {
-                  setActiveNotes((prev) => prev.filter((n) => n !== midi));
-                }}
-                width={Math.min(maxWidth - 120, 1000)}
+                playNote={(midi: number) => sampler.triggerAttack(Tone.Frequency(midi, "midi").toNote())}
+                stopNote={(midi: number) => sampler.triggerRelease(Tone.Frequency(midi, "midi").toNote())}
+                width={pianoDisplayWidth}
                 keyboardShortcuts={keyboardShortcuts}
+                renderNoteLabel={({ midiNumber, isAccidental }: any) => (
+                  <div className={`piano-label-large ${isAccidental ? 'color-white' : 'color-black'}`}>
+                    {Tone.Frequency(midiNumber, "midi").toNote()}
+                  </div>
+                )}
               />
-            )}
+            </div>
+          )}
         </div>
         
-        <div style={{ padding: "0 20px 20px" }}>
-          <button onClick={goBack} style={backButtonStyle}>← EXIT SESSION</button>
+        <div style={{ padding: "0 40px 60px", textAlign: 'left' }}>
+          <button onClick={goBack} style={backButtonStyle}>← EXIT TO HOME</button>
         </div>
       </div>
     </div>
   );
 };
 
-// --- STYLES ---
+// UI Styling
+const containerStyle: React.CSSProperties = { width: "100vw", height: "100vh", display: "flex", justifyContent: "center", alignItems: "center", background: "#050505", overflow: "hidden" };
+const pianoChassisStyle: React.CSSProperties = { width: "95%", background: "#111", borderRadius: "16px", border: "1px solid #333", boxShadow: "0 50px 100px rgba(0,0,0,0.9)" };
+const toolbarStyle: React.CSSProperties = { padding: "30px 50px", display: "flex", alignItems: "center", gap: "40px", background: "#000", borderBottom: "2px solid #1a1a1a" };
+const playButtonStyle: React.CSSProperties = { background: "#facc15", border: "none", padding: "15px 40px", borderRadius: "8px", fontWeight: "900", cursor: "pointer", fontSize: "16px", letterSpacing: "1px" };
 
-const customPianoStyles = `
-  .ReactPiano__Key--natural { 
-    background: linear-gradient(to bottom, #ffffff 0%, #e2e2e2 100%) !important; 
-    border-radius: 0 0 5px 5px !important;
-  }
-  .ReactPiano__Key--accidental { 
-    background: linear-gradient(to bottom, #333 0%, #000 100%) !important; 
-    border-radius: 0 0 3px 3px !important;
-    height: 60% !important;
-  }
-  .ReactPiano__Key--active.ReactPiano__Key--natural { 
-    background: #facc15 !important; 
-    box-shadow: 0 0 20px #facc15 !important;
-    z-index: 10;
-  }
-  .ReactPiano__Key--active.ReactPiano__Key--accidental { 
-    background: #eab308 !important; 
-    box-shadow: 0 0 15px #eab308 !important;
-    z-index: 10;
-  }
-`;
+const pianoWrapperStyle: React.CSSProperties = { 
+    padding: "0px 20px 40px", 
+    background: '#000', 
+    display: 'flex', 
+    justifyContent: 'center' 
+};
 
-const containerStyle: React.CSSProperties = { width: "100%", height: "100%", display: "flex", justifyContent: "center", alignItems: "center", background: "#121212", padding: '20px' };
-const pianoChassisStyle: React.CSSProperties = { background: "#262626", borderRadius: "20px", border: "1px solid #333", boxShadow: "0 40px 80px rgba(0,0,0,0.6)", width: '100%', maxWidth: '1100px', overflow: 'hidden' };
-const toolbarStyle: React.CSSProperties = { padding: "25px 35px", display: "flex", alignItems: "center", gap: "30px", background: "#171717", borderBottom: "1px solid #333" };
-const fileUploadWrapper: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: '8px' };
-const labelStyle: React.CSSProperties = { color: '#666', fontSize: '9px', fontWeight: 900, letterSpacing: '1.5px' };
-const fileInputStyle: React.CSSProperties = { color: "#888", fontSize: "11px" };
-const playButtonStyle: React.CSSProperties = { background: "#facc15", border: "none", padding: "12px 28px", borderRadius: "10px", fontWeight: "bold", cursor: "pointer", color: "#000" };
-const scrubberContainer: React.CSSProperties = { flexGrow: 1, display: 'flex', alignItems: 'center', gap: '20px' };
-const sliderStyle: React.CSSProperties = { flexGrow: 1, accentColor: "#facc15", cursor: "pointer" };
-const timeStyle: React.CSSProperties = { color: "#facc15", fontFamily: "monospace", fontSize: '14px' };
-const backButtonStyle: React.CSSProperties = { background: "transparent", border: "1px solid #333", color: "#555", padding: "10px 20px", borderRadius: "8px", cursor: "pointer", fontSize: '11px', fontWeight: 'bold' };
+const backButtonStyle: React.CSSProperties = { 
+    background: "transparent", 
+    border: "2px solid #facc15", 
+    color: "#facc15", 
+    padding: "12px 24px", 
+    borderRadius: "8px", 
+    cursor: "pointer", 
+    fontSize: "14px", 
+    fontWeight: "bold",
+    fontFamily: "'Arial Black', sans-serif",
+    marginTop: "20px"
+};
 
 export default PianoComponent;
