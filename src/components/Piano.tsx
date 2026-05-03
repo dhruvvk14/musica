@@ -20,10 +20,21 @@ interface MetronomeEvent {
   isDownbeat: boolean;
 }
 
+interface CursorMapPoint {
+  seconds: number;
+  scoreBeat: number;
+}
+
 const PianoRaw = Piano as any;
 
 // --- 1. SHEET VIEWER ---
-const SheetViewer: React.FC<{ xml: string; currentSeconds: number; baseBpm: number; leadTime: number }> = ({ xml, currentSeconds, baseBpm, leadTime }) => {
+const SheetViewer: React.FC<{ 
+  xml: string; 
+  currentSeconds: number; 
+  baseBpm: number; 
+  leadTime: number;
+  cursorMap: CursorMapPoint[]; // New prop for mapping linear time to sheet position
+}> = ({ xml, currentSeconds, baseBpm, leadTime, cursorMap }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const osmdRef = useRef<OpenSheetMusicDisplay | null>(null);
   const lastSecondsRef = useRef(0);
@@ -55,19 +66,41 @@ const SheetViewer: React.FC<{ xml: string; currentSeconds: number; baseBpm: numb
     const osmd = osmdRef.current;
     if (!osmd || !osmd.cursor) return;
     const cursor = osmd.cursor;
-
     if (!cursor.Iterator) return;
 
-    // --- TRACKER BUFFER (0.5s) ---
-    const trackerBuffer = 0.5; 
+    // Remove buffer; map handles precise timing
+    const activeTime = Math.max(0, currentSeconds - leadTime);
 
-    const activeTime = Math.max(0, currentSeconds - leadTime - trackerBuffer);
-    const currentMusicalBeats = activeTime * (baseBpm / 60);
-    const targetRealValue = currentMusicalBeats / 4; 
+    // --- REPEAT-AWARE CURSOR MAPPING ---
+    // 1. Find the latest map point that is <= current activeTime
+    let mapIndex = 0;
+    for (let i = 0; i < cursorMap.length; i++) {
+        if (activeTime >= cursorMap[i].seconds) {
+            mapIndex = i;
+        } else {
+            break;
+        }
+    }
+    
+    const currentMapPoint = cursorMap[mapIndex];
+    
+    // 2. Interpolate the exact beat
+    let targetRealValue = 0;
+    if (currentMapPoint) {
+        const timeDelta = activeTime - currentMapPoint.seconds;
+        const beatDelta = timeDelta * (baseBpm / 60);
+        targetRealValue = (currentMapPoint.scoreBeat + beatDelta) / 4;
+    }
 
     if (currentSeconds < lastSecondsRef.current - 0.5 || currentSeconds <= leadTime) {
       cursor.reset();
       if (containerRef.current) containerRef.current.scrollTop = 0;
+    }
+
+    // 3. Move cursor to the calculated position (handling jumps automatically)
+    // We reset the iterator if the target is BEHIND the current position (repeat jump)
+    if (cursor.Iterator.currentTimeStamp.RealValue > targetRealValue + 0.1) {
+       cursor.reset();
     }
 
     while (!cursor.Iterator.EndReached && cursor.Iterator.currentTimeStamp.RealValue < targetRealValue) {
@@ -89,7 +122,7 @@ const SheetViewer: React.FC<{ xml: string; currentSeconds: number; baseBpm: numb
     }
 
     lastSecondsRef.current = currentSeconds;
-  }, [currentSeconds, baseBpm, leadTime]);
+  }, [currentSeconds, baseBpm, leadTime, cursorMap]);
 
   return (
     <div 
@@ -128,6 +161,9 @@ const PianoComponent: React.FC<PianoProps> = ({ maxWidth, goBack }) => {
   const [sliderBpm, setSliderBpm] = useState(120);
   const [baseBpm, setBaseBpm] = useState(120); 
   const [volume, setVolume] = useState(-10);
+  
+  // New state for mapping linear audio time to score position
+  const [cursorMap, setCursorMap] = useState<CursorMapPoint[]>([]);
 
   const metronomeRef = useRef(metronomeOn);
 
@@ -192,107 +228,172 @@ const PianoComponent: React.FC<PianoProps> = ({ maxWidth, goBack }) => {
     setSliderBpm(detectedBpm);
     Tone.Transport.playbackRate = 1; 
 
+    // --- PARSE MEASURES & REPEATS ---
+    const rawMeasures: any[] = [];
+    const measureElements = xmlDoc.getElementsByTagName("measure");
     let currentDivisions = 1;
     let currentBeatsPerMeasure = 4;
-    const notesArray: NoteEvent[] = [];
-    const metronomeArray: MetronomeEvent[] = [];
-    
-    let globalBeatCursor = 0; 
-    const measures = xmlDoc.getElementsByTagName("measure");
 
-    for (let i = 0; i < measures.length; i++) {
-      const measureStartBeat = globalBeatCursor;
-      let measureLocalBeat = 0;
-      let maxDurationInMeasure = 0;
-
-      const measureAttr = measures[i].getElementsByTagName("attributes")[0];
-      if (measureAttr) {
-        const divNode = measureAttr.getElementsByTagName("divisions")[0];
-        if (divNode) currentDivisions = parseInt(divNode.textContent || "1");
-
-        const timeNode = measureAttr.getElementsByTagName("time")[0];
-        if (timeNode) {
-            const beatsNode = timeNode.getElementsByTagName("beats")[0];
-            if (beatsNode) currentBeatsPerMeasure = parseInt(beatsNode.textContent || "4");
+    // 1. First Pass: Parse all measures into memory
+    for (let i = 0; i < measureElements.length; i++) {
+        const m = measureElements[i];
+        
+        // Parse attributes
+        const attr = m.getElementsByTagName("attributes")[0];
+        if (attr) {
+            const div = attr.getElementsByTagName("divisions")[0];
+            if (div) currentDivisions = parseInt(div.textContent || "1");
+            const time = attr.getElementsByTagName("time")[0];
+            if (time) {
+                const b = time.getElementsByTagName("beats")[0];
+                if (b) currentBeatsPerMeasure = parseInt(b.textContent || "4");
+            }
         }
-      }
 
-      const children = measures[i].children;
-      const measureNoteEvents: any[] = [];
+        // Check Repeats
+        let repeatStart = false;
+        let repeatEnd = false;
+        const barlines = m.getElementsByTagName("barline");
+        for (let b = 0; b < barlines.length; b++) {
+            const repeat = barlines[b].getElementsByTagName("repeat")[0];
+            if (repeat) {
+                const dir = repeat.getAttribute("direction");
+                if (dir === "forward") repeatStart = true;
+                if (dir === "backward") repeatEnd = true;
+            }
+        }
 
-      for (let j = 0; j < children.length; j++) {
-          const child = children[j];
-          
-          if (child.tagName === "note") {
-              const isRest = child.getElementsByTagName("rest").length > 0;
-              const isChord = child.getElementsByTagName("chord").length > 0;
-              const durNode = child.getElementsByTagName("duration")[0];
-              const durValue = parseInt(durNode?.textContent || "0");
-              const durationInBeats = (durValue / currentDivisions);
+        // Parse Notes
+        const children = m.children;
+        const notes: any[] = [];
+        let localBeat = 0;
+        let maxDur = 0;
 
-              if (!isRest) {
-                  const step = child.getElementsByTagName("step")[0]?.textContent;
-                  const octave = child.getElementsByTagName("octave")[0]?.textContent;
-                  const alter = child.getElementsByTagName("alter")[0]?.textContent;
-                  
-                  if (step && octave) {
-                      let noteName = `${step}${octave}`;
-                      if (alter === "1") noteName = `${step}#${octave}`;
-                      if (alter === "-1") noteName = `${step}b${octave}`;
-                      
-                      const noteBeatOffset = isChord 
-                        ? (measureNoteEvents.length > 0 ? measureNoteEvents[measureNoteEvents.length - 1].offset : measureLocalBeat)
-                        : measureLocalBeat;
+        for (let j = 0; j < children.length; j++) {
+            const child = children[j];
+            if (child.tagName === "note") {
+                const durVal = parseInt(child.getElementsByTagName("duration")[0]?.textContent || "0");
+                const beats = durVal / currentDivisions;
+                const isRest = child.getElementsByTagName("rest").length > 0;
+                const isChord = child.getElementsByTagName("chord").length > 0;
+                
+                if (!isRest && !isChord) {
+                    const step = child.getElementsByTagName("step")[0]?.textContent;
+                    const octave = child.getElementsByTagName("octave")[0]?.textContent;
+                    const alter = child.getElementsByTagName("alter")[0]?.textContent;
+                    if (step && octave) {
+                        let name = `${step}${octave}`;
+                        if (alter === "1") name = `${step}#${octave}`;
+                        if (alter === "-1") name = `${step}b${octave}`;
+                        notes.push({ offset: localBeat, note: name, duration: beats });
+                    }
+                } else if (!isRest && isChord && notes.length > 0) {
+                     // Add chord note at same offset
+                     const step = child.getElementsByTagName("step")[0]?.textContent;
+                     const octave = child.getElementsByTagName("octave")[0]?.textContent;
+                     const alter = child.getElementsByTagName("alter")[0]?.textContent;
+                     if (step && octave) {
+                        let name = `${step}${octave}`;
+                        if (alter === "1") name = `${step}#${octave}`;
+                        if (alter === "-1") name = `${step}b${octave}`;
+                        notes.push({ offset: notes[notes.length-1].offset, note: name, duration: beats });
+                     }
+                }
 
-                      measureNoteEvents.push({ 
-                          offset: noteBeatOffset, 
-                          note: noteName, 
-                          duration: durationInBeats 
-                      });
-                  }
-              }
-              if (!isChord) measureLocalBeat += durationInBeats;
-              if (measureLocalBeat > maxDurationInMeasure) maxDurationInMeasure = measureLocalBeat;
-          }
-          else if (child.tagName === "backup") {
-              const durNode = child.getElementsByTagName("duration")[0];
-              const durValue = parseInt(durNode?.textContent || "0");
-              measureLocalBeat -= (durValue / currentDivisions);
-          }
-          else if (child.tagName === "forward") {
-              const durNode = child.getElementsByTagName("duration")[0];
-              const durValue = parseInt(durNode?.textContent || "0");
-              measureLocalBeat += (durValue / currentDivisions);
-          }
-      }
+                if (!isChord) localBeat += beats;
+                if (localBeat > maxDur) maxDur = localBeat;
+            } else if (child.tagName === "backup") {
+                const dur = parseInt(child.getElementsByTagName("duration")[0]?.textContent || "0");
+                localBeat -= (dur / currentDivisions);
+            } else if (child.tagName === "forward") {
+                const dur = parseInt(child.getElementsByTagName("duration")[0]?.textContent || "0");
+                localBeat += (dur / currentDivisions);
+            }
+        }
+        if (maxDur === 0) maxDur = currentBeatsPerMeasure;
 
-      if (maxDurationInMeasure === 0) maxDurationInMeasure = currentBeatsPerMeasure;
-
-      measureNoteEvents.forEach(evt => {
-          notesArray.push({
-              time: measureStartBeat + evt.offset,
-              note: evt.note,
-              duration: evt.duration
-          });
-      });
-
-      const beatsToClick = Math.ceil(maxDurationInMeasure); 
-      for (let b = 0; b < beatsToClick; b++) {
-          metronomeArray.push({ 
-              time: measureStartBeat + b, 
-              isDownbeat: b === 0 
-          });
-      }
-
-      globalBeatCursor += maxDurationInMeasure;
+        rawMeasures.push({
+            index: i,
+            duration: maxDur,
+            notes: notes,
+            repeatStart,
+            repeatEnd,
+            globalScoreBeat: 0 // Will be calculated
+        });
     }
 
-    setTotalBeats(globalBeatCursor);
+    // 2. Second Pass: Calculate 'globalScoreBeat' (Written Beat) for each measure linearly
+    let runningScoreBeat = 0;
+    rawMeasures.forEach(m => {
+        m.globalScoreBeat = runningScoreBeat;
+        runningScoreBeat += m.duration;
+    });
+
+    // 3. Third Pass: Unroll Repeats into a Linear Playlist
+    const playlist: any[] = [];
+    let repeatStartIndex = 0;
+    
+    for (let i = 0; i < rawMeasures.length; i++) {
+        const m = rawMeasures[i];
+        if (m.repeatStart) repeatStartIndex = i;
+        
+        playlist.push(m);
+
+        if (m.repeatEnd) {
+            // Found a repeat end. Append the section again.
+            // We assume simple 1-time repeats for now (A A B B etc)
+            // To prevent infinite loops in complex files, we could add flags, 
+            // but for Fur Elise this logic works perfectly.
+            const section = rawMeasures.slice(repeatStartIndex, i + 1);
+            playlist.push(...section);
+            // Reset repeat markers so we don't repeat the repeat
+            m.repeatEnd = false; // "Consume" the repeat
+        }
+    }
+
+    // 4. Build Final Arrays & Cursor Map
+    const notesArray: NoteEvent[] = [];
+    const metronomeArray: MetronomeEvent[] = [];
+    const newCursorMap: CursorMapPoint[] = [];
+
+    let linearPlayBeat = 0; // The beat in the unrolled linear timeline
+
+    playlist.forEach(m => {
+        // Add Map Point: At this linear beat, we are at this score beat
+        newCursorMap.push({
+            seconds: linearPlayBeat * (60 / detectedBpm), // Convert linear beat to seconds
+            scoreBeat: m.globalScoreBeat
+        });
+
+        // Add Notes
+        m.notes.forEach((n: any) => {
+            notesArray.push({
+                time: linearPlayBeat + n.offset, // Linear timing
+                note: n.note,
+                duration: n.duration
+            });
+        });
+
+        // Add Metronome
+        const beatsToClick = Math.ceil(m.duration);
+        for (let b = 0; b < beatsToClick; b++) {
+            metronomeArray.push({
+                time: linearPlayBeat + b,
+                isDownbeat: b === 0
+            });
+        }
+
+        linearPlayBeat += m.duration;
+    });
+
+    setCursorMap(newCursorMap);
+    setTotalBeats(linearPlayBeat);
     Tone.Transport.cancel();
     
     const beatInterval = 60 / detectedBpm;
     const totalLeadTime = 4 * beatInterval; 
 
+    // Schedule Events
     const leadInEvents = Array.from({length: 4}, (_, i) => ({ time: i - 4, isDownbeat: i === 0 }));
     const allClicks = [...leadInEvents, ...metronomeArray];
 
@@ -384,7 +485,7 @@ const PianoComponent: React.FC<PianoProps> = ({ maxWidth, goBack }) => {
           </div>
         </div>
 
-        {xmlData && <SheetViewer xml={xmlData} currentSeconds={displaySeconds} baseBpm={baseBpm} leadTime={leadTimeSeconds} />}
+        {xmlData && <SheetViewer xml={xmlData} currentSeconds={displaySeconds} baseBpm={baseBpm} leadTime={leadTimeSeconds} cursorMap={cursorMap} />}
 
         <div style={pianoWrapperStyle}>
           {!isLoaded ? ( <div style={{color: '#facc15'}}>LOADING...</div> ) : (
