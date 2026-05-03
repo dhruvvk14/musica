@@ -15,13 +15,21 @@ interface NoteEvent {
   duration: number;
 }
 
-// --- 1. SHEET VIEWER (Fixed Duration Logic + 0.7s Buffer) ---
-const SheetViewer: React.FC<{ xml: string; currentSeconds: number; bpm: number; leadTime: number }> = ({ xml, currentSeconds, bpm, leadTime }) => {
+interface MetronomeEvent {
+  time: number;
+  isDownbeat: boolean;
+}
+
+const PianoRaw = Piano as any;
+
+// --- 1. SHEET VIEWER ---
+const SheetViewer: React.FC<{ xml: string; currentSeconds: number; baseBpm: number; leadTime: number }> = ({ xml, currentSeconds, baseBpm, leadTime }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const osmdRef = useRef<OpenSheetMusicDisplay | null>(null);
   const lastSecondsRef = useRef(0);
 
-  const beatsLeft = Math.ceil((leadTime - currentSeconds) / (60 / bpm));
+  const activeSeconds = Math.max(0, leadTime - currentSeconds);
+  const beatsLeft = Math.ceil(activeSeconds / (60 / baseBpm));
   const showCountdown = currentSeconds < leadTime && currentSeconds > 0;
 
   useEffect(() => {
@@ -31,6 +39,8 @@ const SheetViewer: React.FC<{ xml: string; currentSeconds: number; bpm: number; 
         drawTitle: false,
         autoResize: true,
         backend: "svg",
+        followCursor: true, 
+        drawingParameters: "compacttight"
       });
       osmd.load(xml).then(() => {
         osmd.render();
@@ -46,45 +56,61 @@ const SheetViewer: React.FC<{ xml: string; currentSeconds: number; bpm: number; 
     if (!osmd || !osmd.cursor) return;
     const cursor = osmd.cursor;
 
-    // 0.7s visual lag
-    const buffer = 0.7; 
-    const bufferedSeconds = Math.max(0, currentSeconds - leadTime - buffer);
-    
-    // Convert to measures (assuming 4/4 time for the tracker logic)
-    const currentMusicalBeats = bufferedSeconds * (bpm / 60);
-    const currentMeasurePosition = currentMusicalBeats / 4; 
+    if (!cursor.Iterator) return;
 
-    // Reset cursor if we jump back or start over
-    if (currentSeconds < lastSecondsRef.current - 0.1 || currentSeconds <= leadTime) {
+    // --- TRACKER BUFFER (0.5s) ---
+    const trackerBuffer = 0.5; 
+
+    const activeTime = Math.max(0, currentSeconds - leadTime - trackerBuffer);
+    const currentMusicalBeats = activeTime * (baseBpm / 60);
+    const targetRealValue = currentMusicalBeats / 4; 
+
+    if (currentSeconds < lastSecondsRef.current - 0.5 || currentSeconds <= leadTime) {
       cursor.reset();
+      if (containerRef.current) containerRef.current.scrollTop = 0;
     }
 
-    // Advance cursor only if the buffered time has crossed the next note's timestamp
-    // We use a small epsilon (0.005) to prevent jitter
-    while (
-      !cursor.Iterator.EndReached && 
-      cursor.Iterator.currentTimeStamp.RealValue < currentMeasurePosition - 0.005
-    ) {
+    while (!cursor.Iterator.EndReached && cursor.Iterator.currentTimeStamp.RealValue < targetRealValue) {
       cursor.next();
     }
     
+    if (containerRef.current && cursor.cursorElement) {
+      const cursorElement = cursor.cursorElement;
+      const cursorTop = cursorElement.getBoundingClientRect().top;
+      const containerTop = containerRef.current.getBoundingClientRect().top;
+      const relativeCursorTop = cursorTop - containerTop;
+
+      if (relativeCursorTop > 120) {
+        containerRef.current.scrollTo({
+          top: containerRef.current.scrollTop + relativeCursorTop - 50, 
+          behavior: 'smooth'
+        });
+      }
+    }
+
     lastSecondsRef.current = currentSeconds;
-  }, [currentSeconds, bpm, leadTime]);
+  }, [currentSeconds, baseBpm, leadTime]);
 
   return (
-    <div style={{ position: 'relative', background: "#fff", margin: "0 40px 10px", height: "200px", overflowY: "auto", borderRadius: "8px", border: "2px solid #333" }}>
+    <div 
+      ref={containerRef} 
+      style={{ 
+        position: 'relative', 
+        background: "#fff", 
+        margin: "0 40px 10px", 
+        flex: 1, 
+        minHeight: "0", 
+        overflowY: "auto", 
+        borderRadius: "8px", 
+        border: "2px solid #333",
+        scrollBehavior: 'smooth'
+      }}
+    >
       {showCountdown && (
-        <div style={{
-          position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-          display: 'flex', justifyContent: 'center', alignItems: 'center',
-          backgroundColor: 'rgba(255,255,255,0.7)', zIndex: 10,
-          fontSize: '80px', fontWeight: '900', color: '#facc15',
-          textShadow: '2px 2px 0px #000', fontFamily: 'Arial Black'
-        }}>
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.7)', zIndex: 10, fontSize: '80px', fontWeight: '900', color: '#facc15', textShadow: '2px 2px 0px #000', fontFamily: 'Arial Black' }}>
           {beatsLeft}
         </div>
       )}
-      <div ref={containerRef} style={{ width: "100%" }} />
     </div>
   );
 };
@@ -98,13 +124,33 @@ const PianoComponent: React.FC<PianoProps> = ({ maxWidth, goBack }) => {
   const [isLoaded, setIsLoaded] = useState(false);
   const [activeNotes, setActiveNotes] = useState<number[]>([]);
   const [xmlData, setXmlData] = useState<string>(""); 
-  const [bpm, setBpm] = useState(120);
+  
+  const [sliderBpm, setSliderBpm] = useState(120);
+  const [baseBpm, setBaseBpm] = useState(120); 
   const [volume, setVolume] = useState(-10);
 
-  const range = { first: MidiNumbers.fromNote("c3"), last: MidiNumbers.fromNote("e5") };
-  
-  const leadTimeSeconds = 4 * (60 / bpm);
-  const totalSeconds = (totalBeats * (60 / bpm)) + leadTimeSeconds;
+  const metronomeRef = useRef(metronomeOn);
+
+  useEffect(() => {
+    metronomeRef.current = metronomeOn;
+  }, [metronomeOn]);
+
+  const [pianoRange, setPianoRange] = useState({ 
+    first: MidiNumbers.fromNote("c3"), 
+    last: MidiNumbers.fromNote("e5") 
+  });
+
+  useEffect(() => {
+    if (activeNotes.length > 0) {
+      const minActive = Math.min(...activeNotes);
+      const maxActive = Math.max(...activeNotes);
+      if (minActive < pianoRange.first || maxActive > pianoRange.last) {
+        const newFirst = Math.max(21, minActive - 7); 
+        const newLast = Math.min(108, newFirst + 28); 
+        setPianoRange({ first: newFirst, last: newLast });
+      }
+    }
+  }, [activeNotes, pianoRange]);
 
   const clickSynth = useMemo(() => new Tone.MembraneSynth({
     pitchDecay: 0.008, octaves: 2,
@@ -119,8 +165,16 @@ const PianoComponent: React.FC<PianoProps> = ({ maxWidth, goBack }) => {
     }).toDestination();
   }, []);
 
-  useEffect(() => { Tone.Transport.bpm.value = bpm; }, [bpm]);
+  useEffect(() => { 
+    if (baseBpm > 0) {
+      Tone.Transport.playbackRate = sliderBpm / baseBpm;
+    }
+  }, [sliderBpm, baseBpm]);
+
   useEffect(() => { Tone.Destination.volume.value = volume; }, [volume]);
+
+  const leadTimeSeconds = 4 * (60 / baseBpm);
+  const totalSeconds = (totalBeats * (60 / baseBpm)) + leadTimeSeconds + 2;
 
   const handleFileLoad = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -129,55 +183,135 @@ const PianoComponent: React.FC<PianoProps> = ({ maxWidth, goBack }) => {
     setXmlData(text); 
     const parser = new DOMParser();
     const xmlDoc = parser.parseFromString(text, "text/xml");
+    
     let detectedBpm = 120;
     const soundNode = xmlDoc.getElementsByTagName("sound")[0];
-    if (soundNode?.getAttribute("tempo")) detectedBpm = parseInt(soundNode.getAttribute("tempo")!);
-    setBpm(detectedBpm);
+    if (soundNode?.getAttribute("tempo")) detectedBpm = parseInt(soundNode.getAttribute("tempo") || "120");
+    
+    setBaseBpm(detectedBpm);
+    setSliderBpm(detectedBpm);
+    Tone.Transport.playbackRate = 1; 
 
-    const divisions = parseInt(xmlDoc.getElementsByTagName("divisions")[0]?.textContent || "1");
+    let currentDivisions = 1;
+    let currentBeatsPerMeasure = 4;
     const notesArray: NoteEvent[] = [];
-    let cumulativeBeats = 0;
+    const metronomeArray: MetronomeEvent[] = [];
+    
+    let globalBeatCursor = 0; 
     const measures = xmlDoc.getElementsByTagName("measure");
 
     for (let i = 0; i < measures.length; i++) {
-      const measureNotes = measures[i].querySelectorAll("note");
-      measureNotes.forEach((note) => {
-        const isRest = note.getElementsByTagName("rest").length > 0;
-        const isChord = note.getElementsByTagName("chord").length > 0;
-        const durValue = parseInt(note.getElementsByTagName("duration")[0]?.textContent || "0");
-        const durationInBeats = (durValue / divisions);
-        if (!isRest) {
-          const step = note.getElementsByTagName("step")[0]?.textContent;
-          const octave = note.getElementsByTagName("octave")[0]?.textContent;
-          const alter = note.getElementsByTagName("alter")[0]?.textContent;
-          if (step && octave) {
-            let noteName = `${step}${octave}`;
-            if (alter === "1") noteName = `${step}#${octave}`;
-            if (alter === "-1") noteName = `${step}b${octave}`;
-            notesArray.push({ time: cumulativeBeats, note: noteName, duration: durationInBeats });
-          }
+      const measureStartBeat = globalBeatCursor;
+      let measureLocalBeat = 0;
+      let maxDurationInMeasure = 0;
+
+      const measureAttr = measures[i].getElementsByTagName("attributes")[0];
+      if (measureAttr) {
+        const divNode = measureAttr.getElementsByTagName("divisions")[0];
+        if (divNode) currentDivisions = parseInt(divNode.textContent || "1");
+
+        const timeNode = measureAttr.getElementsByTagName("time")[0];
+        if (timeNode) {
+            const beatsNode = timeNode.getElementsByTagName("beats")[0];
+            if (beatsNode) currentBeatsPerMeasure = parseInt(beatsNode.textContent || "4");
         }
-        if (!isChord) cumulativeBeats += durationInBeats;
+      }
+
+      const children = measures[i].children;
+      const measureNoteEvents: any[] = [];
+
+      for (let j = 0; j < children.length; j++) {
+          const child = children[j];
+          
+          if (child.tagName === "note") {
+              const isRest = child.getElementsByTagName("rest").length > 0;
+              const isChord = child.getElementsByTagName("chord").length > 0;
+              const durNode = child.getElementsByTagName("duration")[0];
+              const durValue = parseInt(durNode?.textContent || "0");
+              const durationInBeats = (durValue / currentDivisions);
+
+              if (!isRest) {
+                  const step = child.getElementsByTagName("step")[0]?.textContent;
+                  const octave = child.getElementsByTagName("octave")[0]?.textContent;
+                  const alter = child.getElementsByTagName("alter")[0]?.textContent;
+                  
+                  if (step && octave) {
+                      let noteName = `${step}${octave}`;
+                      if (alter === "1") noteName = `${step}#${octave}`;
+                      if (alter === "-1") noteName = `${step}b${octave}`;
+                      
+                      const noteBeatOffset = isChord 
+                        ? (measureNoteEvents.length > 0 ? measureNoteEvents[measureNoteEvents.length - 1].offset : measureLocalBeat)
+                        : measureLocalBeat;
+
+                      measureNoteEvents.push({ 
+                          offset: noteBeatOffset, 
+                          note: noteName, 
+                          duration: durationInBeats 
+                      });
+                  }
+              }
+              if (!isChord) measureLocalBeat += durationInBeats;
+              if (measureLocalBeat > maxDurationInMeasure) maxDurationInMeasure = measureLocalBeat;
+          }
+          else if (child.tagName === "backup") {
+              const durNode = child.getElementsByTagName("duration")[0];
+              const durValue = parseInt(durNode?.textContent || "0");
+              measureLocalBeat -= (durValue / currentDivisions);
+          }
+          else if (child.tagName === "forward") {
+              const durNode = child.getElementsByTagName("duration")[0];
+              const durValue = parseInt(durNode?.textContent || "0");
+              measureLocalBeat += (durValue / currentDivisions);
+          }
+      }
+
+      if (maxDurationInMeasure === 0) maxDurationInMeasure = currentBeatsPerMeasure;
+
+      measureNoteEvents.forEach(evt => {
+          notesArray.push({
+              time: measureStartBeat + evt.offset,
+              note: evt.note,
+              duration: evt.duration
+          });
       });
+
+      const beatsToClick = Math.ceil(maxDurationInMeasure); 
+      for (let b = 0; b < beatsToClick; b++) {
+          metronomeArray.push({ 
+              time: measureStartBeat + b, 
+              isDownbeat: b === 0 
+          });
+      }
+
+      globalBeatCursor += maxDurationInMeasure;
     }
 
-    setTotalBeats(cumulativeBeats);
+    setTotalBeats(globalBeatCursor);
     Tone.Transport.cancel();
+    
     const beatInterval = 60 / detectedBpm;
-    const totalLeadTime = 4 * beatInterval;
+    const totalLeadTime = 4 * beatInterval; 
 
-    for (let i = 0; i < cumulativeBeats + 4; i++) {
-      const isDownbeat = i % 4 === 0;
-      Tone.Transport.schedule((time) => {
-        if (metronomeOn) clickSynth.triggerAttackRelease(isDownbeat ? "C6" : "C5", "32n", time, 0.4);
-      }, i * beatInterval);
-    }
+    const leadInEvents = Array.from({length: 4}, (_, i) => ({ time: i - 4, isDownbeat: i === 0 }));
+    const allClicks = [...leadInEvents, ...metronomeArray];
 
-    new Tone.Part<NoteEvent>((time, event) => {
+    new Tone.Part((time: number, event: MetronomeEvent) => {
+        if (metronomeRef.current) {
+            clickSynth.triggerAttackRelease(event.isDownbeat ? "C6" : "C5", "32n", time, 0.4);
+        }
+    }, allClicks.map(c => ({...c, time: (c.time * beatInterval) + totalLeadTime}))).start(0);
+
+    new Tone.Part((time: number, event: NoteEvent) => {
       const midiValue = Tone.Frequency(event.note).toMidi();
-      sampler.triggerAttackRelease(event.note, (event.duration * (60/Tone.Transport.bpm.value)), time);
+      const currentPlaybackRate = Tone.Transport.playbackRate;
+      const realDuration = (event.duration * beatInterval) / currentPlaybackRate;
+      const gap = Math.min(0.1, realDuration * 0.15); 
+      const visualDuration = Math.max(0.05, realDuration - gap); 
+
+      sampler.triggerAttackRelease(event.note, realDuration, time);
       Tone.Draw.schedule(() => setActiveNotes((prev) => [...new Set([...prev, midiValue])]), time);
-      Tone.Draw.schedule(() => setActiveNotes((prev) => prev.filter((n) => n !== midiValue)), time + (event.duration * (60/Tone.Transport.bpm.value)));
+      Tone.Draw.schedule(() => setActiveNotes((prev) => prev.filter((n) => n !== midiValue)), time + visualDuration);
     }, notesArray.map(n => ({...n, time: (n.time * beatInterval) + totalLeadTime}))).start(0);
   };
 
@@ -207,10 +341,10 @@ const PianoComponent: React.FC<PianoProps> = ({ maxWidth, goBack }) => {
   return (
     <div style={containerStyle}>
       <style>{`
-        .ReactPiano__Keyboard { display: flex !important; background: #000; border-top: 15px solid #1a1a1a; margin: 0 auto; overflow: visible !important; justify-content: center; }
+        .ReactPiano__Keyboard { display: flex !important; background: #000; border-top: 15px solid #1a1a1a; margin: 0 auto; overflow: visible !important; justify-content: center; transition: all 0.5s ease-in-out; }
         .ReactPiano__Key { margin: 0 !important; position: relative !important; left: auto !important; }
-        .ReactPiano__Key--natural { height: 350px !important; background: #ffffff !important; border: 1px solid #bbb !important; width: ${naturalKeyWidth}px !important; }
-        .ReactPiano__Key--accidental { height: 220px !important; background: #111 !important; z-index: 10 !important; width: ${naturalKeyWidth * 0.6}px !important; margin-left: -${naturalKeyWidth * 0.3}px !important; margin-right: -${naturalKeyWidth * 0.3}px !important; box-shadow: 2px 5px 10px rgba(0,0,0,0.5); }
+        .ReactPiano__Key--natural { height: 260px !important; background: #ffffff !important; border: 1px solid #bbb !important; width: ${naturalKeyWidth}px !important; }
+        .ReactPiano__Key--accidental { height: 160px !important; background: #111 !important; z-index: 10 !important; width: ${naturalKeyWidth * 0.6}px !important; margin-left: -${naturalKeyWidth * 0.3}px !important; margin-right: -${naturalKeyWidth * 0.3}px !important; box-shadow: 2px 5px 10px rgba(0,0,0,0.5); }
         .ReactPiano__Key--active { position: relative; }
         .ReactPiano__Key--active::after { content: ""; position: absolute; bottom: 12px; left: 10%; width: 80%; height: 8px; background: #ff0000; box-shadow: 0 0 15px rgba(255, 0, 0, 0.9); border-radius: 4px; z-index: 100; }
         .piano-label-large { position: absolute; bottom: 30px; left: 0; right: 0; text-align: center; font-family: 'Arial Black', sans-serif; font-weight: 900; font-size: 13px; color: #000; pointer-events: none; }
@@ -233,7 +367,7 @@ const PianoComponent: React.FC<PianoProps> = ({ maxWidth, goBack }) => {
           
           <div style={{ display: 'flex', gap: '20px', alignItems: 'center', borderLeft: '1px solid #333', paddingLeft: '20px' }}>
             <div style={controlLabelStyle}><span>VOL</span><input type="range" className="control-slider" min="-40" max="0" value={volume} onChange={(e) => setVolume(parseInt(e.target.value))} /></div>
-            <div style={controlLabelStyle}><span>{bpm} BPM</span><input type="range" className="control-slider" min="40" max="220" value={bpm} onChange={(e) => setBpm(parseInt(e.target.value))} /></div>
+            <div style={controlLabelStyle}><span>{sliderBpm} BPM</span><input type="range" className="control-slider" min="40" max="220" value={sliderBpm} onChange={(e) => setSliderBpm(parseInt(e.target.value))} /></div>
             <div style={controlLabelStyle}>
                 <span>CLICK</span>
                 <button className={`metronome-toggle ${metronomeOn ? 'active' : ''}`} onClick={() => setMetronomeOn(!metronomeOn)}>
@@ -250,13 +384,14 @@ const PianoComponent: React.FC<PianoProps> = ({ maxWidth, goBack }) => {
           </div>
         </div>
 
-        {xmlData && <SheetViewer xml={xmlData} currentSeconds={displaySeconds} bpm={bpm} leadTime={leadTimeSeconds} />}
+        {xmlData && <SheetViewer xml={xmlData} currentSeconds={displaySeconds} baseBpm={baseBpm} leadTime={leadTimeSeconds} />}
 
         <div style={pianoWrapperStyle}>
           {!isLoaded ? ( <div style={{color: '#facc15'}}>LOADING...</div> ) : (
             <div style={{ width: maxWidth * 0.9 }}>
-              <Piano
-                activeNotes={activeNotes} noteRange={range}
+              <PianoRaw
+                activeNotes={activeNotes} 
+                noteRange={pianoRange} 
                 playNote={(midi: number) => sampler.triggerAttack(Tone.Frequency(midi, "midi").toNote())}
                 stopNote={(midi: number) => sampler.triggerRelease(Tone.Frequency(midi, "midi").toNote())}
                 width={maxWidth * 0.9}
@@ -279,12 +414,20 @@ const PianoComponent: React.FC<PianoProps> = ({ maxWidth, goBack }) => {
 };
 
 const containerStyle: React.CSSProperties = { width: "100vw", height: "100vh", display: "flex", justifyContent: "center", alignItems: "center", background: "#050505", overflow: "hidden" };
-const pianoChassisStyle: React.CSSProperties = { width: "95%", background: "#111", borderRadius: "16px", border: "1px solid #333", display: 'flex', flexDirection: 'column' };
+const pianoChassisStyle: React.CSSProperties = { 
+  width: "95%", 
+  height: "90vh", 
+  background: "#111", 
+  borderRadius: "16px", 
+  border: "1px solid #333", 
+  display: 'flex', 
+  flexDirection: 'column' 
+};
 const toolbarStyle: React.CSSProperties = { padding: "20px 40px", display: "flex", alignItems: "center", gap: "30px", background: "#000", borderBottom: "2px solid #1a1a1a" };
 const titleStyleStudio: React.CSSProperties = { color: "#facc15", fontSize: "28px", fontWeight: "900", fontFamily: "'Arial Black', sans-serif", margin: 0, letterSpacing: "2px" };
 const playButtonStyle: React.CSSProperties = { background: "#facc15", border: "none", padding: "10px 25px", borderRadius: "8px", fontWeight: "900", cursor: "pointer", fontSize: "14px", minWidth: "120px" };
 const controlLabelStyle: React.CSSProperties = { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', color: '#666', fontSize: '10px', fontWeight: 'bold', fontFamily: 'monospace', minWidth: '90px' };
-const pianoWrapperStyle: React.CSSProperties = { padding: "20px 20px 0px", background: '#000', display: 'flex', justifyContent: 'center', minHeight: '365px' };
-const footerStyle: React.CSSProperties = { padding: "40px 50px 60px", textAlign: 'left', background: '#111' };
+const pianoWrapperStyle: React.CSSProperties = { padding: "20px 20px 0px", background: '#000', display: 'flex', justifyContent: 'center' };
+const footerStyle: React.CSSProperties = { padding: "40px 50px 20px", textAlign: 'left', background: '#111', marginTop: 'auto' };
 
 export default PianoComponent;
