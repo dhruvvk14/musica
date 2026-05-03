@@ -1,24 +1,26 @@
 import React, { useState, useEffect, useRef } from "react";
 import PianoComponent from "../components/Piano";
-import { uploadFile} from "../firebase/uploadfile";
+import { uploadFile } from "../firebase/uploadfile";
+import { UploadCloud, Music, ArrowRight, Loader2, FileAudio, Zap } from "lucide-react"; 
 
-const App: React.FC = () => {
+const Upload: React.FC = () => {
+  // --- STATE ---
   const [started, setStarted] = useState(false);
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [musicXML, setMusicXML] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const url = "http://localhost:8000/";
 
+  // --- WEBSOCKET SETUP ---
   useEffect(() => {
     const handleResize = () => setWindowWidth(window.innerWidth);
     window.addEventListener("resize", handleResize);
 
-    // FIX: Correctly replace http with ws
-    // Result: ws://localhost:8000/ws
     const wsUrl = url.replace("http", "ws") + "ws";
     console.log("Connecting to WebSocket:", wsUrl);
     
@@ -32,7 +34,6 @@ const App: React.FC = () => {
       try {
         const data = JSON.parse(event.data) as { filename?: string };
         if (data.filename) {
-          console.log("📩 WebSocket received filename:", data.filename);
           fetchMusicXML(data.filename);
         }
       } catch (e) {
@@ -46,85 +47,73 @@ const App: React.FC = () => {
     };
   }, []);
 
-  // --------------------
-  // 2. Fetch MusicXML
-  // --------------------
+  // --- LOGIC ---
   const fetchMusicXML = async (filename: string) => {
-    console.log(`🚀 Fetching MusicXML for: ${filename}...`);
-    
     try {
       const res = await fetch(url + "result/" + filename);
-      if (!res.ok) throw new Error("Failed to fetch XML content");
+      if (!res.ok) throw new Error("Failed to fetch XML");
       
       const text = await res.text();
-      console.log("✅ MusicXML Loaded successfully!");
-      
       setMusicXML(text); 
       setIsUploading(false);
 
-      // --- Firebase Upload Logic ---
-      // We upload the XML string we just received
-      console.log("☁️ Uploading result to Firebase...");
-      
-      // Create a Blob/File from the XML string to upload it
+      // Firebase
       const xmlFile = new File([text], filename, { type: "text/xml" });
-      
-      // Assuming uploadFile takes (File, path/filename)
       await uploadFile(xmlFile, filename); 
-      console.log("✅ Firebase upload complete");
-
-      
 
     } catch (err) {
-      console.error("❌ Failed to fetch/upload MusicXML:", err);
+      console.error("❌ Error:", err);
       alert("Error retrieving score data.");
       setIsUploading(false);
     }
   };
 
-  // --------------------
-  // Handlers
-  // --------------------
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      setSelectedFile(file);
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files?.[0]) {
+      setSelectedFile(e.target.files[0]);
       setMusicXML(null); 
+    }
+  };
+
+  const handleDrag = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === "dragenter" || e.type === "dragover") {
+      setDragActive(true);
+    } else if (e.type === "dragleave") {
+      setDragActive(false);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      setSelectedFile(e.dataTransfer.files[0]);
+      setMusicXML(null);
     }
   };
 
   const handleStartProcess = async () => {
     if (!selectedFile) {
-      setStarted(true); // Manual Mode
+      setStarted(true); 
       return;
     }
-
     setIsUploading(true);
     setMusicXML(null);
-    setStarted(true); // Switch to Piano View immediately
+    setStarted(true); 
 
     const formData = new FormData();
     formData.append("file", selectedFile);
 
     try {
-      console.log("📤 Uploading image to backend...");
-      const res = await fetch(url + "upload", {
-        method: "POST",
-        body: formData,
-      });
-
+      const res = await fetch(url + "upload", { method: "POST", body: formData });
       if (!res.ok) throw new Error("Server upload error");
-
       const data = await res.json();
-      console.log("✅ Image upload successful. Response:", data);
 
-      // If backend processes immediately, fetch now.
-      // If it takes time, the WebSocket will trigger the fetch later.
       if(data.filename) {
-         console.log("⚡ Backend returned filename immediately.");
          fetchMusicXML(data.filename);
-      } else {
-         console.log("⏳ Waiting for WebSocket notification...");
       }
     } catch (err) {
       console.error("Upload error:", err);
@@ -134,85 +123,218 @@ const App: React.FC = () => {
     }
   };
 
+  // --- RENDER ---
   return (
-    <div style={appContainerStyle}>
-      {!started ? (
-        <div style={{ textAlign: "center", color: "#f0f0f0", maxWidth: "700px" }}>
-          <h1 style={titleStyle}>MUSICA</h1>
-          <p style={taglineStyle}>
-            Practice makes perfect. Learn just by providing the music sheet.
-          </p>
+    <div style={containerStyle}>
+      
+      {/* Backgrounds (Matching Home.tsx) */}
+      {!started && (
+        <>
+          <div className="blob-anim" style={backgroundGlowStyle} />
+          <div style={gridPatternStyle} />
+          <div style={vignetteStyle} />
+        </>
+      )}
 
-          <div 
-            onClick={() => fileInputRef.current?.click()}
-            style={uploadBoxStyle}
-            onMouseOver={(e) => (e.currentTarget.style.borderColor = "#facc15")}
-            onMouseOut={(e) => (e.currentTarget.style.borderColor = "#444")}
-          >
-            <input 
-              type="file" 
-              ref={fileInputRef} 
-              onChange={handleFileUpload} 
-              accept="image/*" 
-              style={{ display: 'none' }} 
-            />
-            {selectedFile ? (
-              <p style={{ color: "#facc15", fontWeight: "bold" }}>✅ {selectedFile.name}</p>
-            ) : (
-              <>
-                <div style={{ fontSize: "1.8rem", marginBottom: "10px", fontWeight: "900", letterSpacing: "4px" }}>
-                  INPUT IMAGE
-                </div>
-                <p style={{ fontSize: "0.85rem", color: "#666", letterSpacing: "1px" }}>
-                  Drop sheet music or <span style={{ color: "#facc15" }}>Browse</span>
-                </p>
-              </>
-            )}
+      {!started ? (
+        <div style={contentWrapperStyle} className="fade-in-up">
+          
+          {/* Header */}
+          <div style={{ marginBottom: "40px", textAlign: "center", position: 'relative', zIndex: 10 }}>
+            <div style={badgeStyle}>
+              <Zap size={12} fill="#facc15" stroke="none" />
+              <span>STUDIO MODE</span>
+            </div>
+            
+            <h1 style={titleStyle}>
+              UPLOAD YOUR <br/>
+              <span style={textGradientStyle}>SHEET MUSIC</span>
+            </h1>
+            
+            <p style={subtitleStyle}>
+              We'll convert your image into an interactive, playable piano score instantly.
+            </p>
           </div>
 
-          <button onClick={handleStartProcess} style={startButtonStyle}>
-            {selectedFile ? "PROCESS & PLAY" : "ENTER STUDIO"}
-          </button>
+          {/* Glass Upload Card */}
+          <div style={glassCardStyle}>
+             <div 
+                onClick={() => fileInputRef.current?.click()}
+                onDragEnter={handleDrag}
+                onDragLeave={handleDrag}
+                onDragOver={handleDrag}
+                onDrop={handleDrop}
+                style={{
+                  ...uploadBoxStyle,
+                  borderColor: dragActive || selectedFile ? "#facc15" : "rgba(255,255,255,0.1)",
+                  background: dragActive ? "rgba(250, 204, 21, 0.05)" : "rgba(0,0,0,0.2)"
+                }}
+             >
+                <input 
+                  type="file" 
+                  ref={fileInputRef} 
+                  onChange={handleFileChange} 
+                  accept="image/*" 
+                  style={{ display: 'none' }} 
+                />
+                
+                {selectedFile ? (
+                  <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '15px', animation: 'fadeIn 0.5s ease'}}>
+                    <div style={selectedIconBoxStyle}>
+                       <Music size={32} color="#000" />
+                    </div>
+                    <div style={{textAlign: 'center'}}>
+                        <p style={{ color: "#fff", fontWeight: "bold", fontSize: "1.1rem", margin: 0, letterSpacing: '0.5px' }}>{selectedFile.name}</p>
+                        <p style={{ color: "#facc15", fontSize: "0.85rem", marginTop: "5px", fontWeight: '600' }}>Ready to Process</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px'}}>
+                    <div style={iconCircleStyle}>
+                       <UploadCloud size={32} color="#facc15" />
+                    </div>
+                    <div style={{textAlign: 'center'}}>
+                      <div style={{ fontSize: "1.2rem", marginBottom: "8px", fontWeight: "700", color: "#fff", letterSpacing: "1px" }}>
+                        DRAG & DROP
+                      </div>
+                      <p style={{ fontSize: "0.9rem", color: "#666", margin: 0 }}>
+                        Supports PNG, JPG, JPEG
+                      </p>
+                    </div>
+                  </div>
+                )}
+             </div>
+
+             <div style={{padding: '0 40px 40px'}}>
+                <button 
+                  onClick={handleStartProcess} 
+                  style={{
+                      ...primaryBtnStyle,
+                      opacity: selectedFile ? 1 : 0.5,
+                      cursor: selectedFile ? 'pointer' : 'not-allowed',
+                  }}
+                >
+                  {isUploading ? (
+                      <><Loader2 className="spin" size={20} /> PROCESSING...</>
+                  ) : (
+                      <>{selectedFile ? "GENERATE TUTORIAL" : "SELECT FILE FIRST"} <ArrowRight size={20} /></>
+                  )}
+                </button>
+             </div>
+          </div>
+
         </div>
       ) : (
+        // PIANO VIEW
         <PianoComponent 
           maxWidth={windowWidth}
           goBack={() => setStarted(false)}
           musicXML={musicXML ?? null}
         />
-
       )}
+      
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;900&display=swap');
+        @keyframes blobBounce { 0% { transform: translate(-50%, -50%) scale(1); } 50% { transform: translate(-50%, -55%) scale(1.1); } 100% { transform: translate(-50%, -50%) scale(1); } }
+        .blob-anim { animation: blobBounce 10s infinite ease-in-out; }
+        @keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        .fade-in-up { opacity: 0; animation: fadeInUp 0.8s ease-out forwards; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .spin { animation: spin 1s linear infinite; }
+      `}</style>
     </div>
   );
 };
 
-const appContainerStyle: React.CSSProperties = {
-  width: "100vw", height: "100vh", backgroundColor: "#0a0a0a",
-  display: "flex", justifyContent: "center", alignItems: "center",
-  fontFamily: "'Inter', sans-serif", overflow: "hidden",
-  background: "radial-gradient(circle at center, #1a1a1a 0%, #050505 100%)",
+// --- STYLES (Matching Home.tsx) ---
+
+const containerStyle: React.CSSProperties = {
+  minHeight: "100vh", width: "100vw", position: "relative", overflow: "hidden",
+  background: "#050505", color: "#fff", display: "flex", flexDirection: "column",
+  alignItems: 'center', justifyContent: 'center', fontFamily: "'Inter', sans-serif"
+};
+
+const backgroundGlowStyle: React.CSSProperties = {
+  position: "absolute", top: "40%", left: "50%", transform: "translate(-50%, -50%)",
+  width: "100vw", height: "100vh", 
+  background: "radial-gradient(circle, rgba(250, 204, 21, 0.1) 0%, rgba(0,0,0,0) 60%)",
+  zIndex: 1, pointerEvents: "none"
+};
+
+const gridPatternStyle: React.CSSProperties = {
+  position: "absolute", inset: 0, zIndex: 0, opacity: 0.15,
+  backgroundImage: "linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)",
+  backgroundSize: "60px 60px", maskImage: "linear-gradient(to bottom, black 20%, transparent 100%)"
+};
+
+const vignetteStyle: React.CSSProperties = {
+  position: "absolute", inset: 0, zIndex: 2, pointerEvents: "none",
+  background: "radial-gradient(circle at center, transparent 0%, #050505 100%)"
+};
+
+const contentWrapperStyle: React.CSSProperties = {
+    position: 'relative', zIndex: 10, width: '100%', maxWidth: '600px', padding: '20px',
+    display: 'flex', flexDirection: 'column', alignItems: 'center'
+};
+
+const badgeStyle: React.CSSProperties = {
+  display: "inline-flex", alignItems: "center", gap: "8px",
+  background: "rgba(250, 204, 21, 0.08)", border: "1px solid rgba(250, 204, 21, 0.2)",
+  color: "#facc15", padding: "6px 14px", borderRadius: "100px", fontSize: "11px", fontWeight: "bold",
+  letterSpacing: "2px", textTransform: "uppercase", marginBottom: "20px"
 };
 
 const titleStyle: React.CSSProperties = {
-  fontSize: "5rem", fontWeight: 900, marginBottom: "10px", color: "#facc15", 
-  fontFamily: "'Arial Black', sans-serif", letterSpacing: "12px",
-  textShadow: "0 10px 30px rgba(0,0,0,0.5)"
+  fontSize: "3.5rem", lineHeight: "1", fontWeight: "900", letterSpacing: "-2px",
+  fontFamily: "'Inter', sans-serif", margin: "0 0 15px 0", color: "#fff"
 };
 
-const taglineStyle: React.CSSProperties = {
-  fontSize: "1.1rem", marginBottom: "50px", opacity: 0.7, letterSpacing: "0.5px", color: "#fff", fontWeight: "300"
+const textGradientStyle: React.CSSProperties = {
+  background: "linear-gradient(180deg, #fff 0%, #666 100%)",
+  WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent"
+};
+
+const subtitleStyle: React.CSSProperties = {
+  fontSize: "1rem", color: "#888", lineHeight: "1.5", fontWeight: "400", margin: 0
+};
+
+// Glass Card for Upload
+const glassCardStyle: React.CSSProperties = {
+    width: '100%',
+    background: "rgba(20, 20, 20, 0.6)", 
+    border: "1px solid rgba(255, 255, 255, 0.1)",
+    backdropFilter: "blur(20px)",
+    borderRadius: "24px", 
+    overflow: 'hidden',
+    boxShadow: "0 20px 50px rgba(0,0,0,0.5)"
 };
 
 const uploadBoxStyle: React.CSSProperties = {
-  border: "1px solid #444", padding: "50px", borderRadius: "4px", marginBottom: "40px",
-  cursor: "pointer", transition: "all 0.4s ease", background: "rgba(255, 255, 255, 0.02)",
-  color: "#888", textTransform: "uppercase"
+  width: "100%", height: "260px",
+  borderBottom: "1px solid rgba(255,255,255,0.1)",
+  display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center",
+  cursor: "pointer", transition: "all 0.3s ease",
+  marginBottom: "30px"
 };
 
-const startButtonStyle: React.CSSProperties = {
-  padding: "18px 80px", fontSize: "16px", borderRadius: "4px", fontWeight: "900", 
-  cursor: "pointer", border: "none", background: "#facc15", color: "#000", 
-  boxShadow: "0 10px 40px rgba(250, 204, 21, 0.2)", letterSpacing: "3px"
+const iconCircleStyle: React.CSSProperties = {
+  width: "70px", height: "70px", borderRadius: "50%", background: "rgba(255, 255, 255, 0.05)",
+  display: "flex", justifyContent: "center", alignItems: "center", marginBottom: "20px",
+  transition: "all 0.3s ease", border: "1px solid rgba(255,255,255,0.1)"
 };
 
-export default App;
+const selectedIconBoxStyle: React.CSSProperties = {
+    width: "60px", height: "60px", borderRadius: "16px", background: "#facc15",
+    display: "flex", justifyContent: "center", alignItems: "center",
+    boxShadow: "0 10px 30px rgba(250, 204, 21, 0.3)"
+};
+
+const primaryBtnStyle: React.CSSProperties = {
+  width: '100%',
+  background: "#facc15", color: "#000", border: "none", padding: "18px 36px",
+  fontSize: "15px", fontWeight: "900", borderRadius: "100px", 
+  display: "flex", alignItems: "center", justifyContent: 'center', gap: "10px", letterSpacing: "1px",
+  transition: "all 0.2s"
+};
+
+export default Upload;

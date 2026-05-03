@@ -33,6 +33,9 @@ export default function Navbar() {
           <Link to="/compare" style={{ ...styles.link, ...(isActive("/compare") ? styles.activeLink : {}) }}>
             Compare
           </Link>
+          <Link to="/video" style={{ ...styles.link, ...(isActive("/video") ? styles.activeLink : {}) }}>
+            Learning
+          </Link>
         </div>
 
         {/* User / Login Section */}
