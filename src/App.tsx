@@ -17,7 +17,6 @@ const App: React.FC = () => {
     const file = event.target.files?.[0];
     if (file) {
       setSelectedFile(file);
-      console.log("File ready for processing:", file.name);
     }
   };
 
@@ -26,8 +25,6 @@ const App: React.FC = () => {
       {!started ? (
         <div style={{ textAlign: "center", color: "#f0f0f0", maxWidth: "700px" }}>
           <h1 style={titleStyle}>MUSICA</h1>
-          
-          {/* --- UPDATED TAGLINE --- */}
           <p style={taglineStyle}>
             Practice makes perfect. Learn just by providing the music sheet.
           </p>
@@ -59,10 +56,7 @@ const App: React.FC = () => {
             )}
           </div>
 
-          <button
-            onClick={() => setStarted(true)}
-            style={startButtonStyle}
-          >
+          <button onClick={() => setStarted(true)} style={startButtonStyle}>
             {selectedFile ? "PROCESS & PLAY" : "ENTER STUDIO"}
           </button>
         </div>
@@ -73,8 +67,6 @@ const App: React.FC = () => {
   );
 };
 
-// --- STYLES ---
-
 const appContainerStyle: React.CSSProperties = {
   width: "100vw", height: "100vh", backgroundColor: "#0a0a0a",
   display: "flex", justifyContent: "center", alignItems: "center",
@@ -83,48 +75,25 @@ const appContainerStyle: React.CSSProperties = {
 };
 
 const titleStyle: React.CSSProperties = {
-  fontSize: "5rem", 
-  fontWeight: 900, 
-  marginBottom: "10px", 
-  color: "#facc15", 
-  fontFamily: "'Arial Black', sans-serif",
-  letterSpacing: "12px",
+  fontSize: "5rem", fontWeight: 900, marginBottom: "10px", color: "#facc15", 
+  fontFamily: "'Arial Black', sans-serif", letterSpacing: "12px",
   textShadow: "0 10px 30px rgba(0,0,0,0.5)"
 };
 
 const taglineStyle: React.CSSProperties = {
-  fontSize: "1.1rem", 
-  marginBottom: "50px", 
-  opacity: 0.7, 
-  letterSpacing: "0.5px",
-  color: "#fff",
-  fontWeight: "300"
+  fontSize: "1.1rem", marginBottom: "50px", opacity: 0.7, letterSpacing: "0.5px", color: "#fff", fontWeight: "300"
 };
 
 const uploadBoxStyle: React.CSSProperties = {
-  border: "1px solid #444",
-  padding: "50px",
-  borderRadius: "4px",
-  marginBottom: "40px",
-  cursor: "pointer",
-  transition: "all 0.4s ease",
-  background: "rgba(255, 255, 255, 0.02)",
-  color: "#888",
-  textTransform: "uppercase"
+  border: "1px solid #444", padding: "50px", borderRadius: "4px", marginBottom: "40px",
+  cursor: "pointer", transition: "all 0.4s ease", background: "rgba(255, 255, 255, 0.02)",
+  color: "#888", textTransform: "uppercase"
 };
 
 const startButtonStyle: React.CSSProperties = {
-  padding: "18px 80px", 
-  fontSize: "16px", 
-  borderRadius: "4px",
-  fontWeight: "900", 
-  cursor: "pointer", 
-  border: "none",
-  background: "#facc15",
-  color: "#000", 
-  boxShadow: "0 10px 40px rgba(250, 204, 21, 0.2)",
-  letterSpacing: "3px",
-  transition: "all 0.2s ease"
+  padding: "18px 80px", fontSize: "16px", borderRadius: "4px", fontWeight: "900", 
+  cursor: "pointer", border: "none", background: "#facc15", color: "#000", 
+  boxShadow: "0 10px 40px rgba(250, 204, 21, 0.2)", letterSpacing: "3px"
 };
 
 export default App;
